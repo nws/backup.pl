@@ -1,0 +1,504 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use POSIX qw/strftime/;
+use File::Path;
+use File::Copy;
+use Sys::Hostname;
+use FindBin;
+
+### start of config
+
+# these are the defaults,
+# looks for config file in:
+# wherever/this/script/is/backup.cfg
+# $HOME/.backup.cfg
+# /etc/backup.cfg
+# does not fail if it cannot find any config file
+# cfg file format is usual ini
+# section names are forced uppercase
+# keys in the GLOBAL (the default) section are forced uppercase
+
+our %O = get_config(
+	KEEP => 10, # how many backups to keep locally
+	S3KEEP => 10, # how many backups to keep on s3
+	ROOTDIR => '/var/www/', # these must have a terminating slash!
+	BACKUPDIR => '/backup/store/',
+	UPPREPDIR => '/backup/up/',
+	DBUSER => '',
+	DBPASS => '',
+	S3BUCKET => '',
+	S3CMDCFG => '/backup/.s3cfg',
+	GPGPASS => '',
+	# if the percentage of size difference between latest backup
+	# and the one before that is larger than this value, warn in the email
+	BACKUP_SIZE_DIFF_PERCENT => 30,
+
+	# docrootname => sqldbname (you can specify more than one, separated by whitespace)
+	# if sqldbname == undef, wont try to dump sql and will dump docrootname as an absolute path
+	DIRS => {
+	#	'prod' => 'prod_db ppsomeotherdb',
+	#	'dev' => 'dev_db',
+	#	'/etc' => undef,
+	},
+	OFFSITES => {
+	#	'prod' => 1,
+	},
+	# keys are emails, values mean if an email is on or off
+	MAILTO => {
+	#	'someone@example.com' => 1,
+	},
+	EXCLUDE_FROM_TAR => {
+	#	'absolute path' => 1,
+	},
+);
+
+### end of config
+
+our @MAILTEXT;
+
+sub get_config {
+	my %config = @_;
+
+	my @cfg_paths = (
+		$FindBin::Bin.'/backup.cfg', 
+		$ENV{HOME}.'/.backup.cfg', 
+		'/etc/backup.cfg',
+	);
+
+	my ($file) = grep { -r $_ } @cfg_paths;
+	
+	return %config unless $file;
+
+	open my $fh, '<', $file or die "cannot open cfg file: $file: $!\n";
+
+	my $section = 'GLOBAL';
+
+	my $line = 0;
+	while (<$fh>) {
+		$line++;
+		next if m/^\s*#/;
+		next if m/^\s*$/;
+		if (my ($s) = m/^\s*\[([^]]+)\]\s*$/) {
+			$section = uc $s;
+			next;
+		}
+		if (my ($k, $v) = m/^\s*(\S+)\s*=\s*(.*)/) {
+			$v =~ s/\s+$//;
+			($section eq 'GLOBAL' ? $config{uc $k} : $config{uc $section}{$k}) = $v;
+			next;
+		}
+		die "failed in cfg $file:$line on $_\n";
+	}
+
+	# sanity checking...
+	for (qw(ROOTDIR BACKUPDIR UPPREPDIR)) {
+		die "bad config: $_ = $config{$_} must have a terminating slash\n" unless substr($config{$_}, -1) eq '/';
+		die "bad config: $_ = $config{$_} is not a directory\n" unless -d $config{$_};
+	}
+
+	die "bad config: no dirs to back up?\n" unless %{ $config{DIRS} };
+
+	$_ = [ split ] for values %{ $config{DIRS} };
+
+	for (keys %{ $config{DIRS} }) {
+		if (@{ $config{DIRS}{$_} }) {
+			die "bad config: [DIRS] $config{ROOTDIR}$_ is not a directory\n" unless -d $config{ROOTDIR}.$_;
+		}
+		else {
+			die "bad config: [DIRS] $_ is not a directory\n" unless -d $_;
+		}
+	}
+	if (grep { $_ } values %{ $config{OFFSITES} }) {
+		die "bad config: s3cfg $config{S3CMDCFG} does not exist\n" unless -f $config{S3CMDCFG};
+		die "bad config: no gpg pass set\n" if $config{GPGPASS} eq '';
+	}
+
+	$config{EXCLUDE_FROM_TAR} = [ keys %{ $config{EXCLUDE_FROM_TAR} || {} } ];
+
+	%config;
+}
+
+sub send_mail {
+	my ($subject, $body, @to) = @_;
+	open my $m, '|-', '/usr/bin/mailx', '-n', '-s', $subject, @to or die "cannot fork mailx: $!";
+	print $m $body;
+	close $m;
+}
+
+sub gather_info {
+	my ($title) = @_;
+	my %du = du($O{BACKUPDIR});
+	my @l;
+	push @l, "files locally:";
+	push @l, map { sprintf "%5s - %s", $du{$_}, $_ } sort keys %du;
+	push @l, 'files on s3:';
+	push @l, s3cmd('rels');
+	("$title", "filesystem usage:", df(), @l);
+}
+
+sub df {
+	my $df = qx(df -h);
+}
+
+sub du {
+	my ($path) = @_;
+	open my $du, '-|', '/usr/bin/find', $path, '-type', 'f', '-exec', 'du', '-h', '{}', '+' or die "cannot fork du: $!";
+	my %du;
+	while (<$du>) {
+		chomp;
+		my ($size, $p) = split /\t/, $_, 2;
+		$p =~ s{^$path/?}{};
+		$du{$p} = $size;
+	}
+	%du;
+}
+
+sub du_sum {
+	my ($path) = @_;
+	$path = quotemeta($path);
+	my $du = qx(du -sk $path);
+	(split /\s+/, $du)[0];
+}
+
+sub is_latest_backup_suspicious {
+	opendir my $d, $O{BACKUPDIR} or die "cannot open ".$O{BACKUPDIR}.": $!";
+	my ($latest, $previous) = reverse sort grep { !m/^\.|\.\.$/ } readdir $d;
+	closedir $d;
+	
+	if ($latest && $previous) {
+		my $latest_size = du_sum($O{BACKUPDIR}.$latest);
+		my $previous_size = du_sum($O{BACKUPDIR}.$previous);
+
+		my $diff = ($O{BACKUP_SIZE_DIFF_PERCENT}/100) * $previous_size;
+
+		if (abs($latest_size - $previous_size) > $diff) {
+			return (
+				latest_path => $latest,
+				latest_size => $latest_size,
+				previous_path => $previous,
+				previous_size => $previous_size,
+				ltgt => ($latest_size > $previous_size ? 'larger' : 'smaller'),
+			);
+		}
+		return ();
+	}
+	return ();
+}
+
+sub tar {
+	my ($tarfile, $srcdir) = @_;
+
+	my $exclude_opts = '';
+	if ($O{EXCLUDE_FROM_TAR} && @{ $O{EXCLUDE_FROM_TAR} }) {
+		$exclude_opts = join ' ', map '--exclude='._shell_quote_backend($_), @{ $O{EXCLUDE_FROM_TAR} };
+	}
+
+	open my $tar, '-|', "/bin/tar $exclude_opts -cz -f $tarfile $srcdir 2>&1" or die "cannot fork tar: $!";
+	my @errors;
+	while (<$tar>) {
+		if (!m/Removing leading .* from member names/) {
+			push @errors, $_;
+		}
+	}
+	close($tar) or die "tar failed: $?\n", join('', @errors);
+}
+
+sub dump_sql {
+	my ($target, $source, $dbname) = @_;
+	unless ($dbname) {
+		return;
+	}
+	system(sprintf '/usr/bin/mysqldump -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"', 
+		$O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
+			or die "cannot excute mysqldump: $!";
+}
+
+my $warned_about_missing_s3;
+sub s3cmd {
+	my ($cmd, @args) = @_;
+	my ($process, @call);
+
+	if ($O{S3BUCKET} eq '' || $O{S3CMDCFG} eq '' || !-f $O{S3CMDCFG}) {
+		if (grep { $_ } values %{ $O{OFFSITES} }) {
+			warn "S3BUCKET or S3CMDCFG are not configured properly, will not do S3 calls\n" unless $warned_about_missing_s3;
+			$warned_about_missing_s3 = 1;
+		}
+		return;
+	}
+
+	my $source = sprintf 's3://%s/%s', $O{S3BUCKET}, (@args && $args[0] ? $args[0] : '');
+	shift @args;
+	my $bucket = quotemeta 's3://'.$O{S3BUCKET}.'/';
+
+	if ($cmd eq 'ls') {
+		$process = sub {
+			my (undef, $file) = split /$bucket/, shift, 2;
+			$file ? $file : ();
+		};
+		@call = ('ls', $source);
+	}
+	elsif ($cmd eq 'rels') {
+		$process = sub {
+			my ($date, $time, $size, $path) = split /\s+/, $_, 4;
+			$path =~ s/$bucket//;
+			$path ? sprintf("%5s - %s", $size, $path) : ();
+		};
+		@call = ('ls', $source, '-H', '--recursive');
+	}
+	elsif ($cmd eq 'get') {
+		$process = sub { print $_[0], "\n" if $_[0] };
+		@call = ('get', $source);
+	}
+	elsif ($cmd eq 'del') {
+		@call = ('del', $source, @args);
+		$process = sub {};
+	}
+	else {
+		die "bad s3 command: $cmd";
+	}
+	open my $s3, '-|', '/usr/bin/s3cmd', '-c', $O{S3CMDCFG}, @call or die "cannot fork s3cmd: $!";
+	my @out;
+	while (<$s3>) {
+		chomp;
+		push @out, $process->($_);
+	}
+	return @out;
+}
+
+sub encrypt_and_upload {
+	my ($target, $source, $source_filename) = @_;
+
+	system(sprintf '/bin/echo "%s"|/usr/bin/gpg --force-mdc --batch -q --passphrase-fd 0 -o "%s/%s.gpg" -c "%s/%s"', 
+		$O{GPGPASS}, $O{UPPREPDIR}, $source_filename, $O{BACKUPDIR}, "$target/$source/$source_filename") == 0
+		or die "cannot execute gpg (or the shell?): $!";
+
+	my $s3filepath = "$target/$source";
+	$s3filepath =~ s{^/+|/+$}{}g;
+	$s3filepath =~ s{/+}{/}g;
+
+	system(sprintf '/usr/bin/s3cmd --force -c "%s" put "%s/%s" "s3://%s/%s/"',
+		$O{S3CMDCFG}, $O{UPPREPDIR}, $source_filename.'.gpg', $O{S3BUCKET}, $s3filepath) == 0
+		or die "cannot execute s3cmd: $!";
+
+	unlink $O{UPPREPDIR}.$source_filename.'.gpg';
+}
+
+sub upload {
+	my ($target, $source, $dbnames) = @_;
+
+
+	my @filenames = map "$_.sql.gz", @$dbnames;
+	push @filenames, "docroot.tar.gz";
+
+
+	for (@filenames) {
+		encrypt_and_upload $target, $source, $_;
+	}
+}
+
+sub gpg_unpack {
+	my ($file) = @_;
+	(my $outfile = $file) =~ s/\.gpg$//;
+	if ($file eq $outfile) {
+		$outfile .= '.decoded';
+	}
+	system(sprintf '/bin/echo "%s"|/usr/bin/gpg --passphrase-fd 0 -d "%s" > %s', $O{GPGPASS}, $file, $outfile) == 0
+		or die "cannot gpg unpack: $!";
+	unlink $file;
+}
+
+sub do_backup {
+	my ($target, $source) = @_;
+
+	die "file alredy exists, something is bogus" if -e $O{BACKUPDIR}."$target/$source";
+
+	push @MAILTEXT, "backing up $source";
+
+	mkpath $O{BACKUPDIR}."$target/$source" or die "cannot mkpath $O{BACKUPDIR}$target/$source: $!";
+
+	my $srcdir = '';
+	if (@{ $O{DIRS}{$source} }) { # the dir to be backed up has an associated database table. this means the dir is relative to ROOTDIR
+		$srcdir .= $O{ROOTDIR};
+	}
+	$srcdir .= $source;
+
+	tar sprintf('%s%s/%s/docroot.tar.gz', $O{BACKUPDIR}, $target, $source), $srcdir;
+	for my $dbname (@{ $O{DIRS}{$source} }) {
+		dump_sql $target, $source, $dbname;
+	}
+
+	if (defined $O{OFFSITES}{$source}) {
+		push @MAILTEXT, " uploading $source";
+		upload $target, $source, $O{DIRS}{$source};
+	}
+}
+
+sub delete_old {
+	my ($backuproot) = @_;
+
+	opendir my $d, $backuproot or die "cannot open $backuproot: $!";
+	my @files = reverse sort grep { !m/^\.|\.\.$/ } readdir $d;
+	closedir $d;
+	# newest are at the top now
+	if ( @files > $O{KEEP} ) {
+		for ( my $i = $O{KEEP}; $i < @files; ++$i ) {
+			rmtree $backuproot.$files[$i];
+		}
+	}
+
+	my @s3files = reverse sort(s3cmd('ls'));
+	if (@s3files > $O{S3KEEP}) {
+		for ( my $i = $O{S3KEEP}; $i < @s3files; ++$i ) {
+			s3cmd 'del', $s3files[$i], '--recursive';
+		}
+	}
+}
+
+my %cmd;
+$cmd{help} = sub {
+	print "$0\n";
+	print "will do backup if no args are passed!\n";
+	print "commands:\n";
+	print " $_\n" for sort keys %cmd;
+};
+$cmd{ls} = sub { print "$_\n" for s3cmd @_ };
+$cmd{get} = sub {
+	my (undef, $path) = @_;
+	print "getting ", $path, " from s3\n";
+	s3cmd 'get', $path;
+	my $local_file = (split qr{/}, $path)[-1];
+	if (! -f $local_file) {
+		die "cannot gpg-unpack file, does not exist: $local_file";
+	}
+	print "unpacking...\n";
+	gpg_unpack $local_file;
+	print "done\n";
+};
+
+if (@ARGV) {
+	my $cmd = shift @ARGV;
+	die "bad cmd: $cmd" unless defined $cmd{$cmd};
+	$cmd{$cmd}->($cmd, @ARGV);
+}
+else {
+	my $timestamp = strftime('%Y-%m-%d %H:%M %z', localtime);
+	my $subject = "Backup on ".hostname." at $timestamp";
+	@MAILTEXT = ($subject, '');
+
+	eval {
+		die "cannot find backup dir ".$O{BACKUPDIR} unless -d $O{BACKUPDIR};
+		die "cannot find rootdir ".$O{ROOTDIR} unless -d $O{ROOTDIR};
+
+		my $bsubdir = strftime "%Y%m%d%H%M%S", localtime;
+
+		die "file alredy exists, something is bogus" if -e $O{BACKUPDIR}.$bsubdir;
+
+		push @MAILTEXT, gather_info('State before backup'), '';
+
+		mkdir $O{BACKUPDIR}.$bsubdir or die "cannot mkdir: $!";
+
+		push @MAILTEXT, "Backing up to $bsubdir/";
+
+		for my $source (keys %{ $O{DIRS} }) {
+			do_backup $bsubdir, $source;
+		}
+		delete_old $O{BACKUPDIR};
+
+		push @MAILTEXT, '', gather_info('State after backup'), '';
+	};
+	if ($@) {
+		push @MAILTEXT, "FAILED: ".$@;
+		$subject = 'FAILED: '.$subject;
+	}
+	else {
+		my %diff = is_latest_backup_suspicious();
+		if (%diff) {
+			$subject = 'WARNING: '.$subject;
+			unshift @MAILTEXT, (
+				"WARNING: Latest backup ($diff{latest_path}, $diff{latest_size}K) is more than ".$O{BACKUP_SIZE_DIFF_PERCENT}."% $diff{ltgt} than the previous one ($diff{previous_path}, $diff{previous_size}K).",
+				'',
+			);
+		}
+		else {
+			$subject = 'SUCCESS: '.$subject;
+		}
+	}
+	if (grep { $_ } values %{ $O{MAILTO} }) {
+		send_mail $subject, join("\n", @MAILTEXT), grep { $O{MAILTO}{$_} } keys %{ $O{MAILTO} };
+	}
+	else {
+		print "ERRORS (no email addresses configured, just dumping it):\n";
+		print " $_\n" for @MAILTEXT;
+	}
+}
+
+sub _shell_quote_backend {
+	my @in = @_;
+
+	return '' unless @in;
+
+	my $ret = '';
+	my $saw_non_equal = 0;
+	foreach (@in) {
+		if (!defined $_ or $_ eq '') {
+			$_ = "''";
+			next;
+		}
+
+		my $escape = 0;
+
+		# = needs quoting when it's the first element (or part of a
+		# series of such elements), as in command position it's a
+		# program-local environment setting
+
+		if (/=/) {
+			if (!$saw_non_equal) {
+				$escape = 1;
+			}
+		}
+		else {
+			$saw_non_equal = 1;
+		}
+
+		if (m|[^\w!%+,\-./:=@^]|) {
+			$escape = 1;
+		}
+
+		if ($escape || (!$saw_non_equal && m/=/)) {
+			# ' -> '\''
+			s/'/'\\''/g;
+
+			# make multiple ' in a row look simpler
+			# '\'''\'''\'' -> '"'''"'
+			s|((?:'\\''){2,})|q{'"} . (q{'} x (length($1) / 4)) . q{"'}|ge;
+
+			$_ = "'$_'";
+			s/^''//;
+			s/''$//;
+		}
+	}
+	continue {
+		$ret .= "$_ ";
+	}
+
+	chop $ret;
+	return $ret;
+}
+
+=pod
+
+TODO: 
+* do not pass gpg pass via echo, that is awful
+* move to percona's xtrabackup
+
+=cut
+
+=head1 COPYRIGHT & LICENSE
+ 
+ Copyright 2011-2012 NWS
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the MIT License.
+   
+=cut
