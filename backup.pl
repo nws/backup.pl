@@ -490,7 +490,9 @@ sub _shell_quote_backend {
 
 TODO: 
 * do not pass gpg pass via echo, that is awful
-* move to percona's xtrabackup
+* add support for percona's xtrabackup
+* do not run w/o args
+* verbosity with interactive terminal
 
 =cut
 
