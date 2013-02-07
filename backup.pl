@@ -27,7 +27,9 @@ our %O = get_config(
 	UPPREPDIR => '/backup/up/',
 	DBUSER => '',
 	DBPASS => '',
+	S3CMD => '/usr/bin/s3cmd',
 	S3BUCKET => '',
+	S3BUCKET_OFFSITE => '',
 	S3CMDCFG => '/backup/.s3cfg',
 	GPGPASS => '',
 	# if the percentage of size difference between latest backup
@@ -113,6 +115,8 @@ sub get_config {
 		die "bad config: s3cfg $config{S3CMDCFG} does not exist\n" unless -f $config{S3CMDCFG};
 		die "bad config: no gpg pass set\n" if $config{GPGPASS} eq '';
 	}
+
+	die "bad config: s3cmd not found at $config{S3CMD}\n" unless -f $config{S3CMD} && -x $config{S3CMD};
 
 	$config{EXCLUDE_FROM_TAR} = [ keys %{ $config{EXCLUDE_FROM_TAR} || {} } ];
 
@@ -216,10 +220,16 @@ sub dump_sql {
 
 my $warned_about_missing_s3;
 sub s3cmd {
+	my $opts = @_ && ref $_[0] eq 'HASH'
+		? shift
+		: {};
+
+	$opts->{BUCKET} ||= $O{S3BUCKET};
+
 	my ($cmd, @args) = @_;
 	my ($process, @call);
 
-	if ($O{S3BUCKET} eq '' || $O{S3CMDCFG} eq '' || !-f $O{S3CMDCFG}) {
+	if ($opts->{BUCKET} eq '' || $O{S3CMDCFG} eq '' || !-f $O{S3CMDCFG}) {
 		if (grep { $_ } values %{ $O{OFFSITES} }) {
 			warn "S3BUCKET or S3CMDCFG are not configured properly, will not do S3 calls\n" unless $warned_about_missing_s3;
 			$warned_about_missing_s3 = 1;
@@ -227,9 +237,9 @@ sub s3cmd {
 		return;
 	}
 
-	my $source = sprintf 's3://%s/%s', $O{S3BUCKET}, (@args && $args[0] ? $args[0] : '');
+	my $source = sprintf 's3://%s/%s', $opts->{BUCKET}, (@args && $args[0] ? $args[0] : '');
 	shift @args;
-	my $bucket = quotemeta 's3://'.$O{S3BUCKET}.'/';
+	my $bucket = quotemeta 's3://'.$opts->{BUCKET}.'/';
 
 	if ($cmd eq 'ls') {
 		$process = sub {
@@ -257,7 +267,7 @@ sub s3cmd {
 	else {
 		die "bad s3 command: $cmd";
 	}
-	open my $s3, '-|', '/usr/bin/s3cmd', '-c', $O{S3CMDCFG}, @call or die "cannot fork s3cmd: $!";
+	open my $s3, '-|', $O{S3CMD}, '-c', $O{S3CMDCFG}, @call or die "cannot fork s3cmd: $!";
 	my @out;
 	while (<$s3>) {
 		chomp;
@@ -271,15 +281,20 @@ sub encrypt_and_upload {
 
 	system(sprintf '/bin/echo "%s"|/usr/bin/gpg --force-mdc --batch -q --passphrase-fd 0 -o "%s/%s.gpg" -c "%s/%s"', 
 		$O{GPGPASS}, $O{UPPREPDIR}, $source_filename, $O{BACKUPDIR}, "$target/$source/$source_filename") == 0
-		or die "cannot execute gpg (or the shell?): $!";
+		or die "cannot execute gpg (or the shell?): $! (exit code: $?)";
 
 	my $s3filepath = "$target/$source";
 	$s3filepath =~ s{^/+|/+$}{}g;
 	$s3filepath =~ s{/+}{/}g;
 
-	system(sprintf '/usr/bin/s3cmd --force -c "%s" put "%s/%s" "s3://%s/%s/"',
-		$O{S3CMDCFG}, $O{UPPREPDIR}, $source_filename.'.gpg', $O{S3BUCKET}, $s3filepath) == 0
-		or die "cannot execute s3cmd: $!";
+	my @target_buckets = $O{S3BUCKET};
+	push @target_buckets, $O{S3BUCKET_OFFSITE} if $O{S3BUCKET_OFFSITE};
+
+	for my $tbucket (@target_buckets) {
+		system(sprintf '%s --force -c "%s" put "%s/%s" "s3://%s/%s/"',
+			$O{S3CMD}, $O{S3CMDCFG}, $O{UPPREPDIR}, $source_filename.'.gpg', $tbucket, $s3filepath) == 0
+			or die "cannot execute s3cmd when uploading to $tbucket: $! (exit code: $?)";
+	}
 
 	unlink $O{UPPREPDIR}.$source_filename.'.gpg';
 }
@@ -347,10 +362,19 @@ sub delete_old {
 		}
 	}
 
-	my @s3files = reverse sort(s3cmd('ls'));
-	if (@s3files > $O{S3KEEP}) {
-		for ( my $i = $O{S3KEEP}; $i < @s3files; ++$i ) {
-			s3cmd 'del', $s3files[$i], '--recursive';
+	delete_old_s3($O{S3KEEP}, {}, reverse sort(s3cmd('ls')));
+
+	if ($O{S3BUCKET_OFFSITE}) {
+		my $s3opt = { BUCKET => $O{S3BUCKET_OFFSITE} };
+		delete_old_s3(1, $s3opt, reverse sort(s3cmd($s3opt, 'ls')));
+	}
+}
+
+sub delete_old_s3 {
+	my ($keep_n, $s3cmdopt, @files) = @_;
+	if (@files > $keep_n) {
+		for ( my $i = $keep_n; $i < @files; ++$i ) {
+			s3cmd $s3cmdopt, 'del', $files[$i], '--recursive';
 		}
 	}
 }
