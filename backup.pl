@@ -8,6 +8,8 @@ use Sys::Hostname;
 use FindBin;
 use File::Temp qw/tempfile/;
 
+our $VERSION = 3.0;
+
 ### start of config
 
 # these are the defaults,
@@ -383,13 +385,25 @@ sub delete_old_s3 {
 }
 
 my %cmd;
+my %help;
+
+$help{help} = "this help";
 $cmd{help} = sub {
-	print "$0\n";
+	print "$0 v$VERSION\n";
 	print "will do backup if no args are passed!\n";
 	print "commands:\n";
-	print " $_\n" for sort keys %cmd;
+	for my $cmd (sort keys %cmd) {
+		my $help = $help{$cmd} || '';
+		$help = "- $help" if $help;
+
+		printf "  %-20s %s\n", $cmd, $help;
+	}
 };
+
+$help{ls} = "get list of files in our s3 bucket";
 $cmd{ls} = sub { print "$_\n" for s3cmd @_ };
+
+$help{get} = "get a file from our s3 bucket";
 $cmd{get} = sub {
 	my (undef, $path) = @_;
 	print "getting ", $path, " from s3\n";
@@ -402,6 +416,8 @@ $cmd{get} = sub {
 	gpg_unpack $local_file;
 	print "done\n";
 };
+
+$help{check_update} = "check this script against the master in the repo, optionally update";
 $cmd{check_update} = sub {
 	my ($cmd, $yes) = @_;
 	$yes ||= '';
@@ -434,7 +450,7 @@ my %noconfig_commands = (
 
 if (@ARGV) {
 	my $cmd = shift @ARGV;
-	die "bad cmd: $cmd" unless defined $cmd{$cmd};
+	$cmd = 'help' unless defined $cmd{$cmd};
 	%O = get_config(%DEFAULTS) unless $noconfig_commands{$cmd};
 	$cmd{$cmd}->($cmd, @ARGV);
 }
