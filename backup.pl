@@ -1,11 +1,12 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use POSIX qw/strftime/;
+use POSIX qw/strftime WIFEXITED WEXITSTATUS/;
 use File::Path;
 use File::Copy;
 use Sys::Hostname;
 use FindBin;
+use File::Temp qw/tempfile/;
 
 ### start of config
 
@@ -19,7 +20,7 @@ use FindBin;
 # section names are forced uppercase
 # keys in the GLOBAL (the default) section are forced uppercase
 
-our %O = get_config(
+our %DEFAULTS = (
 	KEEP => 10, # how many backups to keep locally
 	S3KEEP => 10, # how many backups to keep on s3
 	ROOTDIR => '/var/www/', # these must have a terminating slash!
@@ -54,6 +55,8 @@ our %O = get_config(
 	#	'absolute path' => 1,
 	},
 );
+
+our %O;
 
 ### end of config
 
@@ -399,13 +402,45 @@ $cmd{get} = sub {
 	gpg_unpack $local_file;
 	print "done\n";
 };
+$cmd{check_update} = sub {
+	my ($cmd, $yes) = @_;
+	$yes ||= '';
+
+	my (undef, $fn) = tempfile UNLINK => 1;
+
+	system('wget', '-q', 'https://raw.github.com/nws/backup.pl/master/backup.pl', '-O', $fn) == 0
+		or die "cannot exec wget: $!";
+
+	my $rv = system("diff", '-u', $0, $fn);
+
+	my $identical = WIFEXITED($rv) && WEXITSTATUS($rv) == 0;
+
+	return if $identical;
+
+	if (lc $yes eq 'yes') {
+		copy $fn, $0
+			or die "cannot update $0: $!";
+		print "\n\n-- updated\n";
+	}
+	else {
+		print "\n\n-- remote file is different, to update local copy, run:\n--  $0 $cmd yes\n";
+	}
+};
+
+my %noconfig_commands = (
+	help => 1,
+	check_update => 1,
+);
 
 if (@ARGV) {
 	my $cmd = shift @ARGV;
 	die "bad cmd: $cmd" unless defined $cmd{$cmd};
+	%O = get_config(%DEFAULTS) unless $noconfig_commands{$cmd};
 	$cmd{$cmd}->($cmd, @ARGV);
 }
 else {
+	%O = get_config(%DEFAULTS);
+
 	my $timestamp = strftime('%Y-%m-%d %H:%M %z', localtime);
 	my $subject = "Backup on ".hostname." at $timestamp";
 	@MAILTEXT = ($subject, '');
