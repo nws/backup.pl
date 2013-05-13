@@ -291,7 +291,7 @@ sub encrypt_and_upload {
 	push @target_buckets, $O{S3BUCKET_OFFSITE} if $O{S3BUCKET_OFFSITE};
 
 	for my $tbucket (@target_buckets) {
-		system(sprintf '%s --force -c "%s" put "%s/%s" "s3://%s/%s/"',
+		system(sprintf '%s --progress --force -c "%s" put "%s/%s" "s3://%s/%s/"',
 			$O{S3CMD}, $O{S3CMDCFG}, $O{UPPREPDIR}, $source_filename.'.gpg', $tbucket, $s3filepath) == 0
 			or die "cannot execute s3cmd when uploading to $tbucket: $! (exit code: $?)";
 	}
