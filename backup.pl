@@ -203,7 +203,7 @@ sub tar {
 		$exclude_opts = join ' ', map '--exclude='._shell_quote_backend($_), @{ $O{EXCLUDE_FROM_TAR} };
 	}
 
-	open my $tar, '-|', "/bin/tar $exclude_opts -cz -f $tarfile $srcdir 2>&1" or die "cannot fork tar: $!";
+	open my $tar, '-|', "/bin/tar $exclude_opts -cz --ignore-failed-read -f $tarfile $srcdir 2>&1" or die "cannot fork tar: $!";
 	my @errors;
 	while (<$tar>) {
 		if (!m/Removing leading .* from member names/) {
@@ -573,7 +573,7 @@ TODO:
 
 =head1 COPYRIGHT & LICENSE
  
- Copyright 2011-2012 NWS
+ Copyright 2011-2013 NWS
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the MIT License.
