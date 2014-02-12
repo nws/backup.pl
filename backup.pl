@@ -34,7 +34,9 @@ our %DEFAULTS = (
 	S3BUCKET => '',
 	S3BUCKET_OFFSITE => '',
 	S3CMDCFG => '/backup/.s3cfg',
+	GPGMODE => 'symmetric',
 	GPGPASS => '',
+	GPGRECIPIENT => '',
 	# if the percentage of size difference between latest backup
 	# and the one before that is larger than this value, warn in the email
 	BACKUP_SIZE_DIFF_PERCENT => 30,
@@ -68,13 +70,13 @@ sub get_config {
 	my %config = @_;
 
 	my @cfg_paths = (
-		$FindBin::Bin.'/backup.cfg', 
-		$ENV{HOME}.'/.backup.cfg', 
+		$FindBin::Bin.'/backup.cfg',
+		$ENV{HOME}.'/.backup.cfg',
 		'/etc/backup.cfg',
 	);
 
 	my ($file) = grep { -r $_ } @cfg_paths;
-	
+
 	return %config unless $file;
 
 	open my $fh, '<', $file or die "cannot open cfg file: $file: $!\n";
@@ -118,7 +120,15 @@ sub get_config {
 	}
 	if (grep { $_ } values %{ $config{OFFSITES} }) {
 		die "bad config: s3cfg $config{S3CMDCFG} does not exist\n" unless -f $config{S3CMDCFG};
-		die "bad config: no gpg pass set\n" if $config{GPGPASS} eq '';
+		if ($config{GPGMODE} eq 'symmetric') {
+			die "bad config: no gpg pass set\n" if $config{GPGPASS} eq '';
+		}
+		elsif ($config{GPGMODE} eq 'asymmetric') {
+			die "bad config: no gpg recipient set\n" if $config{GPGRECIPIENT} eq '';
+		}
+		else {
+			die "bad config: unknown gpg mode: $config{GPGMODE}\n";
+		}
 	}
 
 	die "bad config: s3cmd not found at $config{S3CMD}\n" unless -f $config{S3CMD} && -x $config{S3CMD};
@@ -174,7 +184,7 @@ sub is_latest_backup_suspicious {
 	opendir my $d, $O{BACKUPDIR} or die "cannot open ".$O{BACKUPDIR}.": $!";
 	my ($latest, $previous) = reverse sort grep { !m/^\.|\.\.$/ } readdir $d;
 	closedir $d;
-	
+
 	if ($latest && $previous) {
 		my $latest_size = du_sum($O{BACKUPDIR}.$latest);
 		my $previous_size = du_sum($O{BACKUPDIR}.$previous);
@@ -218,7 +228,7 @@ sub dump_sql {
 	unless ($dbname) {
 		return;
 	}
-	system(sprintf '/usr/bin/mysqldump -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"', 
+	system(sprintf '/usr/bin/mysqldump -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
 		$O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
 			or die "cannot excute mysqldump: $!";
 }
@@ -281,12 +291,24 @@ sub s3cmd {
 	return @out;
 }
 
+sub encrypt {
+	my ($source_filename, $target_filename) = @_;
+
+	if ($O{GPGMODE} eq 'symmetric') {
+		system(sprintf '/bin/echo "%s"|/usr/bin/gpg --force-mdc --batch -q --passphrase-fd 0 -o "%s/%s.gpg" -c "%s/%s"',
+			$O{GPGPASS}, $O{UPPREPDIR}, $source_filename, $O{BACKUPDIR}, $target_filename) == 0
+			or die "cannot execute gpg (or the shell?): $! (exit code: $?)";
+	}
+	else {
+		system('/usr/bin/gpg', '--output', "$O{UPPREPDIR}/$source_filename.gpg", '--batch', '--encrypt', '--recipient', $O{GPGRECIPIENT}, "$O{BACKUPDIR}/$target_filename") == 0
+			or die "cannot execute gpg: $! (exit code: $?)";
+	}
+}
+
 sub encrypt_and_upload {
 	my ($target, $source, $source_filename) = @_;
 
-	system(sprintf '/bin/echo "%s"|/usr/bin/gpg --force-mdc --batch -q --passphrase-fd 0 -o "%s/%s.gpg" -c "%s/%s"', 
-		$O{GPGPASS}, $O{UPPREPDIR}, $source_filename, $O{BACKUPDIR}, "$target/$source/$source_filename") == 0
-		or die "cannot execute gpg (or the shell?): $! (exit code: $?)";
+	encrypt $source_filename, "$target/$source/$source_filename";
 
 	my $s3filepath = "$target/$source";
 	$s3filepath =~ s{^/+|/+$}{}g;
@@ -412,8 +434,13 @@ $cmd{get} = sub {
 	if (! -f $local_file) {
 		die "cannot gpg-unpack file, does not exist: $local_file";
 	}
-	print "unpacking...\n";
-	gpg_unpack $local_file;
+	if ($O{GPGMODE} eq 'symmetric') {
+		print "unpacking...\n";
+		gpg_unpack $local_file;
+	}
+	else {
+		print "NOT unpacking, it was encrypted using a keypair\n";
+	}
 	print "done\n";
 };
 
@@ -563,8 +590,7 @@ sub _shell_quote_backend {
 
 =pod
 
-TODO: 
-* do not pass gpg pass via echo, that is awful
+TODO:
 * add support for percona's xtrabackup
 * do not run w/o args
 * verbosity with interactive terminal
@@ -572,10 +598,10 @@ TODO:
 =cut
 
 =head1 COPYRIGHT & LICENSE
- 
+
  Copyright 2011-2013 NWS
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the MIT License.
-   
+
 =cut
