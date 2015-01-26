@@ -380,8 +380,7 @@ sub delete_old {
 	my ($backuproot) = @_;
 
 	opendir my $d, $backuproot or die "cannot open $backuproot: $!";
-	# never delete backups made on the first of the month
-	my @files = reverse sort grep { !m/^\d{6}01\d{6}$/ } grep { !m/^\.|\.\.$/ } readdir $d;
+	my @files = reverse sort grep { !m/^\.|\.\.$/ } readdir $d;
 	closedir $d;
 	# newest are at the top now
 	if ( @files > $O{KEEP} ) {
@@ -400,6 +399,10 @@ sub delete_old {
 
 sub delete_old_s3 {
 	my ($keep_n, $s3cmdopt, @files) = @_;
+
+	# never delete backups made on the first of the month
+	@files = grep { !m{^\d{6}01\d{6}/?$} } @files;
+
 	if (@files > $keep_n) {
 		for ( my $i = $keep_n; $i < @files; ++$i ) {
 			s3cmd $s3cmdopt, 'del', $files[$i], '--recursive';
