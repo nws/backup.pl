@@ -8,7 +8,7 @@ use Sys::Hostname;
 use FindBin;
 use File::Temp qw/tempfile/;
 
-our $VERSION = 3.0;
+our $VERSION = 3.1;
 
 ### start of config
 
@@ -380,7 +380,8 @@ sub delete_old {
 	my ($backuproot) = @_;
 
 	opendir my $d, $backuproot or die "cannot open $backuproot: $!";
-	my @files = reverse sort grep { !m/^\.|\.\.$/ } readdir $d;
+	# never delete backups made on the first of the month
+	my @files = reverse sort grep { !m/^\d{6}01\d{6}$/ } grep { !m/^\.|\.\.$/ } readdir $d;
 	closedir $d;
 	# newest are at the top now
 	if ( @files > $O{KEEP} ) {
