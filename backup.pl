@@ -8,7 +8,7 @@ use Sys::Hostname;
 use FindBin;
 use File::Temp qw/tempfile/;
 
-our $VERSION = 3.1;
+our $VERSION = 3.2;
 
 ### start of config
 
@@ -326,9 +326,15 @@ sub encrypt_and_upload {
 	unlink $O{UPPREPDIR}.$source_filename.'.gpg';
 }
 
+sub clean_up {
+	my $dir = shift;
+	rmtree $dir, { keep_root => 1 };
+}
+
 sub upload {
 	my ($target, $source, $dbnames) = @_;
 
+	clean_up $O{UPPREPDIR};
 
 	my @filenames = map "$_.sql.gz", @$dbnames;
 	push @filenames, "docroot.tar.gz";
