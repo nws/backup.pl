@@ -91,7 +91,10 @@ sub get_config {
 
 	my ($file) = grep { -r $_ } @cfg_paths;
 
-	return %config unless $file;
+	unless ($file) {
+		config_override_from_env(\%config);
+		return %config;
+	}
 
 	open my $fh, '<', $file or die "cannot open cfg file: $file: $!\n";
 
