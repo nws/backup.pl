@@ -115,6 +115,11 @@ sub get_config {
 
 	config_override_from_env(\%config);
 
+	if ($ENV{DEBUG_BACKUP}) {
+		require Data::Dumper;
+		die Data::Dumper::Dumper(\%config);
+	}
+
 	# sanity checking...
 	for (qw(ROOTDIR BACKUPDIR UPPREPDIR)) {
 		die "bad config: $_ = $config{$_} must have a terminating slash\n" unless substr($config{$_}, -1) eq '/';
@@ -123,6 +128,8 @@ sub get_config {
 
 	die "bad config: no dirs to back up?\n" unless %{ $config{DIRS} };
 
+	# this line turns both undef and empty string into an empty array!
+	# it also lets us support multiple databases for a webroot
 	$_ = [ split ] for values %{ $config{DIRS} };
 
 	for (keys %{ $config{DIRS} }) {
@@ -149,6 +156,11 @@ sub get_config {
 	die "bad config: s3cmd not found at $config{S3CMD}\n" unless -f $config{S3CMD} && -x $config{S3CMD};
 
 	$config{EXCLUDE_FROM_TAR} = [ keys %{ $config{EXCLUDE_FROM_TAR} || {} } ];
+
+	if ($ENV{DEBUG_BACKUP} && $ENV{DEBUG_BACKUP} eq 'late') {
+		require Data::Dumper;
+		die Data::Dumper::Dumper(\%config);
+	}
 
 	%config;
 }
