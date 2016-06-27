@@ -37,6 +37,7 @@ our %DEFAULTS = (
 	GPGMODE => 'symmetric',
 	GPGPASS => '',
 	GPGRECIPIENT => '',
+	MYSQLDUMPOPTS => '',
 	# if the percentage of size difference between latest backup
 	# and the one before that is larger than this value, warn in the email
 	BACKUP_SIZE_DIFF_PERCENT => 30,
@@ -255,8 +256,8 @@ sub dump_sql {
 	unless ($dbname) {
 		return;
 	}
-	system(sprintf '/usr/bin/mysqldump -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
-		$O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
+	system(sprintf '/usr/bin/mysqldump %s -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
+		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
 			or die "cannot excute mysqldump: $!";
 }
 
