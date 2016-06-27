@@ -66,6 +66,17 @@ our %O;
 
 our @MAILTEXT;
 
+sub config_override_from_env {
+	my $c = shift;
+
+	for my $k (keys %$c) {
+		next if ref $c->{$k};
+
+		my $ek = "BACKUP_CFG_OVERRIDE_$k";
+		$c->{$k} = $ENV{ $ek } if $ENV{ $ek };
+	}
+}
+
 sub get_config {
 	my %config = @_;
 
@@ -101,6 +112,8 @@ sub get_config {
 		}
 		die "failed in cfg $file:$line on $_\n";
 	}
+
+	config_override_from_env(\%config);
 
 	# sanity checking...
 	for (qw(ROOTDIR BACKUPDIR UPPREPDIR)) {
