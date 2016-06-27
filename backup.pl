@@ -75,6 +75,8 @@ sub get_config {
 		'/etc/backup.cfg',
 	);
 
+	unshift @cfg_paths, $ENV{BACKUP_CFG} if $ENV{BACKUP_CFG};
+
 	my ($file) = grep { -r $_ } @cfg_paths;
 
 	return %config unless $file;
