@@ -53,6 +53,8 @@ sub read_config {
 
 sub check_config_dvxsd {
 	my $config = shift;
+	# XXX rewrite this shit without deps (especially XS deps)
+	# AND better error handling cos this is a joke
 	use Config::Validate qw/mkpath/;
 	my $def = {
 		SETTINGS => {
