@@ -9,6 +9,7 @@ use Getopt::Long;
 
 GetOptions
 	'config=s' => \my $config_file,
+	'dump-config' => \my $dump_config,
 	'dry-run' => \my $dry_run,
 	'verbose' => \my $verbose
 	or die usage();
@@ -17,9 +18,22 @@ die usage() unless defined $config_file;
 
 my $config = read_config($config_file);
 
+if ($dump_config) {
+	use Data::Dumper;
+	print Data::Dumper
+		->new([$config])
+		->Sortkeys(1)
+		->Quotekeys(0)
+		->Indent(1)
+		->Terse(1)
+		->Useqq(1)
+		->Dump;
+	exit;
+}
+
 sub usage {
 	<<EOS;
-$0 --config FILE [--dry-run] [--verbose]
+$0 --config FILE [--dry-run] [--verbose] [--dump-config]
 v$VERSION
 EOS
 }
@@ -107,9 +121,32 @@ sub check_config_dvxsd {
 				PASS => { type => 'string', optional => 1 },
 			},
 		},
+		BACKUPS => {
+			type => 'hash',
+			keytype => 'string',
+			child => {
+				FROM => {
+					type => 'hash',
+					keytype => 'string',
+					child => {
+						DB => { type => 'array', subtype => 'string', optional => 1 },
+						DIR => { type => 'string', optional => 1 },
+						EXCLUDE => { type => 'array', subtype => 'string', optional => 1 },
+					},
+				},
+				TO => {
+					type => 'array',
+					subtype => 'string',
+				},
+			},
+		},
 	};
+	# XXX lots more validation to be done:
+	# two types of things that go into a FROM need to be distinguished and validated
+	# various strings have to be checked (value of TO, etc)
+	# stuff that goes into filenames needs more rigorous checking
 	my $validator = Config::Validate->new(schema => $def);
-	print Dumper [ $validator->validate(config => $config) ];
+	return $validator->validate(config => $config);
 }
 
 sub check_config {
