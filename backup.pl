@@ -30,6 +30,7 @@ our %DEFAULTS = (
 	UPPREPDIR => '/backup/up/',
 	DBUSER => '',
 	DBPASS => '',
+	DBHOST => 'localhost',
 	S3CMD => '/usr/bin/s3cmd',
 	S3BUCKET => '',
 	S3BUCKET_OFFSITE => '',
@@ -255,12 +256,12 @@ sub tar {
 }
 
 sub dump_sql {
-	my ($target, $source, $dbname) = @_;
+	my ($target, $source, $dbhost, $dbname) = @_;
 	unless ($dbname) {
 		return;
 	}
-	system(sprintf '/usr/bin/mysqldump %s -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
-		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
+	system(sprintf '/usr/bin/mysqldump -u"%s" '.($O{DBPASS} eq '' ? '' : '-p"%s"').' -h"%s" "%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
+		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), $O{DBHOST}, quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
 			or die "cannot excute mysqldump: $!";
 }
 
@@ -404,7 +405,7 @@ sub do_backup {
 
 	tar sprintf('%s%s/%s/docroot.tar.gz', $O{BACKUPDIR}, $target, $source), $srcdir;
 	for my $dbname (@{ $O{DIRS}{$source} }) {
-		dump_sql $target, $source, $dbname;
+		dump_sql $target, $source, $O{DBHOST}, $dbname;
 	}
 
 	if (defined $O{OFFSITES}{$source}) {
