@@ -256,7 +256,7 @@ sub tar {
 }
 
 sub dump_sql {
-	my ($target, $source, $dbhost, $dbname) = @_;
+	my ($target, $source, $dbname) = @_;
 	unless ($dbname) {
 		return;
 	}
@@ -405,7 +405,7 @@ sub do_backup {
 
 	tar sprintf('%s%s/%s/docroot.tar.gz', $O{BACKUPDIR}, $target, $source), $srcdir;
 	for my $dbname (@{ $O{DIRS}{$source} }) {
-		dump_sql $target, $source, $O{DBHOST}, $dbname;
+		dump_sql $target, $source, $dbname;
 	}
 
 	if (defined $O{OFFSITES}{$source}) {
