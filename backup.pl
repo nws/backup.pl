@@ -493,7 +493,7 @@ $cmd{check_update} = sub {
 
 	my (undef, $fn) = tempfile UNLINK => 1;
 
-	system('wget', '-q', 'https://raw.github.com/nws/backup.pl/master/backup.pl', '-O', $fn) == 0
+	system('wget', '--no-check-certificate', '-q', 'https://raw.github.com/nws/backup.pl/master/backup.pl', '-O', $fn) == 0
 		or die "cannot exec wget: $!";
 
 	my $rv = system("diff", '-u', $0, $fn);
