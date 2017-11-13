@@ -260,7 +260,7 @@ sub dump_sql {
 	unless ($dbname) {
 		return;
 	}
-	system(sprintf '/usr/bin/mysqldump -u"%s" '.($O{DBPASS} eq '' ? '' : '-p"%s"').' -h"%s" "%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
+	system(sprintf '/usr/bin/mysqldump %s -u"%s" '.($O{DBPASS} eq '' ? '' : '-p"%s"').' -h"%s" "%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
 		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), $O{DBHOST}, quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
 			or die "cannot excute mysqldump: $!";
 }
