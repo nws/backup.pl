@@ -23,7 +23,7 @@ our $VERSION = 3.2;
 # keys in the GLOBAL (the default) section are forced uppercase
 
 our %DEFAULTS = (
-	KEEP => 10, # how many backups to keep locally
+	KEEP => 2, # how many backups to keep locally
 	S3KEEP => 10, # how many backups to keep on s3
 	ROOTDIR => '/var/www/', # these must have a terminating slash!
 	BACKUPDIR => '/backup/store/',
