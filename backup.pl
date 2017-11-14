@@ -405,10 +405,11 @@ sub do_backup {
 	}
 	$srcdir .= $source;
 
-	tar sprintf('%s%s/%s/docroot.tar.gz', $O{BACKUPDIR}, $target, $source), $srcdir;
 	for my $dbname (@{ $O{DIRS}{$source} }) {
 		dump_sql $target, $source, $dbname;
 	}
+
+	tar sprintf('%s%s/%s/docroot.tar.gz', $O{BACKUPDIR}, $target, $source), $srcdir;
 
 	if (defined $O{OFFSITES}{$source}) {
 		push @MAILTEXT, " uploading $source";
