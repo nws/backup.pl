@@ -281,6 +281,8 @@ sub s3cmd {
 			warn "S3BUCKET or S3CMDCFG are not configured properly, will not do S3 calls\n" unless $warned_about_missing_s3;
 			$warned_about_missing_s3 = 1;
 		}
+		print STDERR "info: No s3 settings found.\n";
+		push @MAILTEXT, "info: No s3 settings found.";
 		return;
 	}
 
