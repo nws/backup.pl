@@ -467,6 +467,11 @@ $cmd{help} = sub {
 	}
 };
 
+$help{cleanup} = "Clean up old backups locally";
+$cmd{cleanup} = sub {
+	delete_old $O{BACKUPDIR};
+};
+
 $help{ls} = "get list of files in our s3 bucket";
 $cmd{ls} = sub { print "$_\n" for s3cmd @_ };
 
