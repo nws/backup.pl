@@ -39,6 +39,7 @@ our %DEFAULTS = (
 	GPGPASS => '',
 	GPGRECIPIENT => '',
 	MYSQLDUMPOPTS => '',
+	MAILER => '/usr/bin/mailx',
 	# if the percentage of size difference between latest backup
 	# and the one before that is larger than this value, warn in the email
 	BACKUP_SIZE_DIFF_PERCENT => 30,
@@ -172,7 +173,7 @@ sub get_config {
 
 sub send_mail {
 	my ($subject, $body, @to) = @_;
-	open my $m, '|-', '/usr/bin/mailx', '-n', '-s', $subject, @to or die "cannot fork mailx: $!";
+	open my $m, '|-', $O{MAILER}, '-n', '-s', $subject, @to or die "cannot fork mailer: $!";
 	print $m $body;
 	close $m;
 }
