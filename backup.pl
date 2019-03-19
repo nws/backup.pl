@@ -8,7 +8,7 @@ use Sys::Hostname;
 use FindBin;
 use File::Temp qw/tempfile/;
 
-our $VERSION = 3.3;
+our $VERSION = 3.4;
 
 ### start of config
 
@@ -273,9 +273,9 @@ sub dump_sql {
 	unless ($dbname) {
 		return;
 	}
-	system(sprintf '/usr/bin/mysqldump %s -u"%s" '.($O{DBPASS} eq '' ? '' : '-p"%s"').' -h"%s" "%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
-		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), $O{DBHOST}, quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
-			or die "cannot excute mysqldump: $!";
+	system('bash', '-c', sprintf 'set -o pipefail; /usr/bin/mysqldump %s -u "%s" '.($O{DBPASS} eq '' ? '' : '-p"%s" ').'"%s" | /bin/gzip -c > "%s/%s/%s.sql.gz"',
+		$O{MYSQLDUMPOPTS}, $O{DBUSER}, ($O{DBPASS} eq '' ? () : $O{DBPASS}), quotemeta($dbname), $O{BACKUPDIR}.$target, $source, quotemeta($dbname)) == 0
+			or die "cannot excute mysqldump: $! (exit code $?)";
 }
 
 my $warned_about_missing_s3;
@@ -365,7 +365,7 @@ sub encrypt_and_upload {
 	push @target_buckets, $O{S3BUCKET_OFFSITE} if $O{S3BUCKET_OFFSITE};
 
 	for my $tbucket (@target_buckets) {
-		system(sprintf '%s --progress --force -c "%s" put "%s/%s" "s3://%s/%s/"',
+		system(sprintf '%s --progress --force -c "%s" --acl-private put "%s/%s" "s3://%s/%s/"',
 			$O{S3CMD}, $O{S3CMDCFG}, $O{UPPREPDIR}, $source_filename.'.gpg', $tbucket, $s3filepath) == 0
 			or die "cannot execute s3cmd when uploading to $tbucket: $! (exit code: $?)";
 	}
