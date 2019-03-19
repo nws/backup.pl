@@ -262,7 +262,9 @@ sub tar {
 		if ($exit_code > 1) {
 			die "tar failed: $exit_code\n", join('', @errors);
 		}
+		push @MAILTEXT, '='x10, "\n";
 		push @MAILTEXT, "tar produced some warnings: $exit_code\n", join('', @errors);
+		push @MAILTEXT, '='x10, "\n";
 	}
 }
 
