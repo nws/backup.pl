@@ -8,7 +8,7 @@ use Sys::Hostname;
 use FindBin;
 use File::Temp qw/tempfile/;
 
-our $VERSION = 3.2;
+our $VERSION = 3.3;
 
 ### start of config
 
@@ -253,7 +253,17 @@ sub tar {
 			push @errors, $_;
 		}
 	}
-	close($tar) or die "tar failed: $?\n", join('', @errors);
+	if (!close $tar) {
+		my $signal = ($? & 127);
+		my $exit_code = ($? >> 8);
+		if ($signal > 0) {
+			die "tar died from a signal: $signal\n", join('', @errors);
+		}
+		if ($exit_code > 1) {
+			die "tar failed: $exit_code\n", join('', @errors);
+		}
+		push @MAILTEXT, "tar produced some warnings: $exit_code\n", join('', @errors);
+	}
 }
 
 sub dump_sql {
